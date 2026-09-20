@@ -1,6 +1,6 @@
 import { Link, useParams } from 'react-router-dom';
 import { Alert, Button, Descriptions, Empty, Space, Spin, Tag, Typography } from 'antd';
-import { FileTextOutlined, PlusOutlined, SoundOutlined } from '@ant-design/icons';
+import { FileTextOutlined, PlusOutlined, PrinterOutlined, SoundOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CONFIDENCE_LABELS,
@@ -154,6 +154,9 @@ export function RecipeDetailPage() {
                 </Button>
                 <a href={versionApi.exportUrl(currentVersion.id, 'md')} target="_blank" rel="noreferrer">
                   <Button>导出 Markdown 食谱</Button>
+                </a>
+                <a href={versionApi.exportUrl(currentVersion.id, 'card')} target="_blank" rel="noreferrer">
+                  <Button icon={<PrinterOutlined />}>打印步骤卡</Button>
                 </a>
               </Space>
             )}

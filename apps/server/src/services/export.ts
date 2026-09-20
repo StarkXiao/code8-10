@@ -175,3 +175,307 @@ export function renderRecipeMarkdown(input: ExportInput): string {
 
   return lines.join('\n');
 }
+
+/* ------------------------------------------------------------------ */
+/* 可打印单页步骤卡（自包含 HTML）                                       */
+/* ------------------------------------------------------------------ */
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+// 数字（含小数、区间与日期）包一层 <span class="num">，让"数字字号"能独立于正文字号调整。
+// 必须在 escapeHtml 之后调用：转义用的是命名实体（&amp; &lt; &apos; …），
+// 实体里不含数字，不会被误包进 span。
+const NUMBER_PATTERN = /\d{4}-\d{2}-\d{2}|\d+(?:\.\d+)?(?:\s*[-–~]\s*\d+(?:\.\d+)?)?/g;
+
+function wrapNums(escaped: string): string {
+  return escaped.replace(NUMBER_PATTERN, (match) => `<span class="num">${match}</span>`);
+}
+
+/** 用户文本进卡片的唯一入口：先转义防注入，再包数字 */
+function text(value: string): string {
+  return wrapNums(escapeHtml(value));
+}
+
+// 步骤卡的样式。--body-size / --num-size 是页面上两个字号滑控直接改的 CSS 变量。
+const CARD_CSS = `:root { --body-size: 13px; --num-size: 1.3em; }
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: #eceae6;
+  color: #1f1f1f;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  font-size: var(--body-size);
+  line-height: 1.55;
+}
+.num { font-size: var(--num-size); font-weight: 700; font-variant-numeric: tabular-nums; }
+.muted { color: #8a8a8a; }
+.toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
+  padding: 8px 14px; background: #fff; border-bottom: 1px solid #ddd;
+  position: sticky; top: 0; z-index: 1;
+}
+.tb-group { display: inline-flex; align-items: center; gap: 4px; }
+.tb-val { min-width: 3.2em; text-align: center; color: #666; font-size: 12px; }
+.toolbar button {
+  font: inherit; font-size: 13px; padding: 3px 10px;
+  border: 1px solid #c8c4bd; border-radius: 5px; background: #faf9f7; cursor: pointer;
+}
+.toolbar button:hover { background: #f0ede8; }
+.tb-print { background: #d46a1f !important; border-color: #d46a1f !important; color: #fff; }
+.tb-hint { color: #999; font-size: 12px; }
+.card {
+  max-width: 190mm; margin: 14px auto; background: #fff;
+  padding: 9mm 11mm; box-shadow: 0 1px 6px rgba(0, 0, 0, .15);
+}
+.card-head h1 { font-size: 1.5em; margin: 0 0 1mm; }
+.meta { color: #777; font-size: .85em; }
+.summary { margin: 2mm 0 0; color: #555; }
+section { margin-top: 5mm; }
+h2 {
+  font-size: 1.08em; margin: 0 0 2mm; padding-left: 8px;
+  border-left: 4px solid #d46a1f; line-height: 1.3;
+}
+table { width: 100%; border-collapse: collapse; }
+th, td { border: 1px solid #cfccc6; padding: 3px 8px; text-align: left; vertical-align: top; }
+th { background: #f5f1ea; font-weight: 600; }
+tr, .steps li { break-inside: avoid; }
+.col-name { width: 30%; }
+.col-amount { width: 22%; }
+.amount { white-space: nowrap; }
+.heat-source { width: 32%; }
+.steps { margin: 0; padding: 0; list-style: none; }
+.steps li { display: flex; gap: 10px; padding: 2.2mm 0; border-bottom: 1px dashed #ddd; }
+.steps li:last-child { border-bottom: none; }
+.step-no {
+  flex: none; width: 1.7em; height: 1.7em; margin-top: .1em;
+  border-radius: 50%; background: #d46a1f; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: .95em;
+}
+.step-body { flex: 1; min-width: 0; }
+.step-title { font-weight: 700; }
+.step-instruction { margin-top: 1px; }
+.step-meta { color: #8a5a2b; margin-top: 2px; font-size: .92em; }
+.step-cues { color: #4a6b3a; margin-top: 2px; font-size: .92em; }
+.card-foot { margin-top: 6mm; color: #999; font-size: .8em; border-top: 1px solid #eee; padding-top: 2mm; }
+@page { size: A4; margin: 10mm; }
+@media print {
+  body { background: #fff; }
+  .toolbar { display: none; }
+  .card { max-width: none; margin: 0; padding: 0; box-shadow: none; }
+}`;
+
+// 字号调节逻辑。这段脚本是完全静态的（不含任何用户数据），
+// 用户内容只出现在 HTML 节点里且都经过 text() 转义。
+const CARD_JS = `(function () {
+  var KEY = 'froa.stepCard.font.v1';
+  var DEF = { body: 13, num: 1.3 };
+  var state = { body: DEF.body, num: DEF.num };
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (saved && isFinite(saved.body) && isFinite(saved.num)) {
+      state.body = Number(saved.body);
+      state.num = Number(saved.num);
+    }
+  } catch (err) { /* localStorage 不可用时用默认值 */ }
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+  function apply() {
+    state.body = clamp(Math.round(state.body), 10, 24);
+    state.num = clamp(Math.round(state.num * 20) / 20, 1, 2.4);
+    var root = document.documentElement;
+    root.style.setProperty('--body-size', state.body + 'px');
+    root.style.setProperty('--num-size', state.num + 'em');
+    var b = document.getElementById('bodySizeVal');
+    var n = document.getElementById('numSizeVal');
+    if (b) b.textContent = state.body + 'px';
+    if (n) n.textContent = Math.round(state.num * 100) + '%';
+    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (err) { /* 忽略 */ }
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('[data-font]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var cmd = btn.getAttribute('data-font') || '';
+      if (cmd === 'reset') {
+        state.body = DEF.body;
+        state.num = DEF.num;
+      } else {
+        var parts = cmd.split(':');
+        var delta = Number(parts[1]);
+        if (parts[0] === 'body') state.body += delta;
+        if (parts[0] === 'num') state.num += delta;
+      }
+      apply();
+    });
+  });
+  var printBtn = document.getElementById('printBtn');
+  if (printBtn) printBtn.addEventListener('click', function () { window.print(); });
+  apply();
+})();`;
+
+/**
+ * 把已发布版本渲染成一张可打印的单页步骤卡（自包含 HTML，无任何外部资源）。
+ *
+ * 与 Markdown 导出的"完整档案"定位不同：卡片只保留下锅时要看的三样东西 ——
+ * 用量表、步骤、火候判断标准。正文字号与数字字号都可以在页面上直接调整，
+ * 调整控件在打印时自动隐藏。
+ */
+export function renderRecipeCardHtml(input: ExportInput): string {
+  const { recipe, version, steps, ingredients, specs } = input;
+  const sortedSteps = [...steps].sort((a, b) => a.orderIndex - b.orderIndex);
+
+  const meta = [`版本 v${version.versionNo}`];
+  if (recipe.dishCategory) meta.push(recipe.dishCategory);
+  if (version.publishedAt) meta.push(`发布于 ${version.publishedAt.slice(0, 10)}`);
+
+  const ingredientRows = ingredients.length
+    ? ingredients
+        .map(
+          (item) => `<tr>
+  <td>${text(item.name)}</td>
+  <td class="amount">${text(formatAmount(item))}</td>
+  <td>${item.note ? text(item.note) : '<span class="muted">—</span>'}</td>
+</tr>`,
+        )
+        .join('\n')
+    : '<tr><td colspan="3" class="muted">暂无用量记录</td></tr>';
+
+  const stepItems = sortedSteps.length
+    ? sortedSteps
+        .map((step, index) => {
+          const details: string[] = [];
+          if (step.heatLevel) details.push(HEAT_LEVEL_LABELS[step.heatLevel]);
+          if (step.heatText) details.push(step.heatText);
+          if (step.temperatureCMin !== null || step.temperatureCMax !== null) {
+            details.push(`${step.temperatureCMin ?? '?'}–${step.temperatureCMax ?? '?'} ℃`);
+          }
+          const duration = formatDuration(step);
+          if (duration) details.push(duration);
+          if (step.tool) details.push(`器具：${step.tool}`);
+          return `<li>
+  <span class="step-no">${index + 1}</span>
+  <div class="step-body">
+    <div class="step-title">${text(step.title)}</div>
+    <div class="step-instruction">${text(step.instruction)}</div>
+    ${details.length ? `<div class="step-meta">${text(details.join(' ｜ '))}</div>` : ''}
+    ${step.sensoryCues.length ? `<div class="step-cues">判断：${text(step.sensoryCues.join('、'))}</div>` : ''}
+  </div>
+</li>`;
+        })
+        .join('\n')
+    : '<li class="muted">暂无步骤</li>';
+
+  // 火候判断标准 = 各步骤的火候/温度/观察指标 + 整理结论里的火候类规格
+  const heatRows: string[] = [];
+  sortedSteps.forEach((step, index) => {
+    const parts: string[] = [];
+    if (step.heatLevel) parts.push(HEAT_LEVEL_LABELS[step.heatLevel]);
+    if (step.heatText) parts.push(`原话“${step.heatText}”`);
+    if (step.temperatureCMin !== null || step.temperatureCMax !== null) {
+      parts.push(`${step.temperatureCMin ?? '?'}–${step.temperatureCMax ?? '?'} ℃`);
+    }
+    const cues = step.sensoryCues.length ? `判断：${step.sensoryCues.join('、')}` : '';
+    if (!parts.length && !cues) return;
+    heatRows.push(`<tr>
+  <td>第 <span class="num">${index + 1}</span> 步 · ${text(step.title)}</td>
+  <td>${text([...parts, cues].filter(Boolean).join(' ｜ '))}</td>
+</tr>`);
+  });
+  for (const spec of specs) {
+    if (spec.resolvedSpec?.type !== 'heat') continue;
+    if (spec.status !== 'resolved' && spec.status !== 'verified') continue;
+    const parts: string[] = [];
+    if (typeof spec.resolvedSpec.value === 'number') {
+      parts.push(`${spec.resolvedSpec.value}${spec.resolvedSpec.unit ?? ''}`);
+    }
+    if (spec.resolvedSpec.range) {
+      parts.push(`${spec.resolvedSpec.range.min}–${spec.resolvedSpec.range.max}${spec.resolvedSpec.unit ?? ''}`);
+    }
+    if (spec.resolvedSpec.criterion) parts.push(spec.resolvedSpec.criterion);
+    if (spec.resolvedSpec.reference) parts.push(`参照：${spec.resolvedSpec.reference}`);
+    heatRows.push(`<tr>
+  <td>「${text(spec.rawPhrase)}」</td>
+  <td>${text(parts.join(' ｜ ') || '—')}</td>
+</tr>`);
+  }
+
+  const heatSection = heatRows.length
+    ? `<table>
+  <thead><tr><th class="heat-source">来源</th><th>火候与判断标准</th></tr></thead>
+  <tbody>
+${heatRows.join('\n')}
+  </tbody>
+</table>`
+    : '<p class="muted">还没有整理出火候判断标准。</p>';
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(recipe.title)} · 步骤卡 v${version.versionNo}</title>
+<style>
+${CARD_CSS}
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <strong>步骤卡</strong>
+  <span class="tb-group">正文字号
+    <button type="button" data-font="body:-1" aria-label="正文字号减小">A−</button>
+    <span id="bodySizeVal" class="tb-val"></span>
+    <button type="button" data-font="body:1" aria-label="正文字号增大">A+</button>
+  </span>
+  <span class="tb-group">数字字号
+    <button type="button" data-font="num:-0.1" aria-label="数字字号减小">A−</button>
+    <span id="numSizeVal" class="tb-val"></span>
+    <button type="button" data-font="num:0.1" aria-label="数字字号增大">A+</button>
+  </span>
+  <button type="button" data-font="reset">恢复默认</button>
+  <button type="button" id="printBtn" class="tb-print">打印</button>
+  <span class="tb-hint">字号设置会在此浏览器记住；内容超过一页时可调小字号再打印</span>
+</div>
+<main class="card">
+  <header class="card-head">
+    <h1>${text(recipe.title)}</h1>
+    <div class="meta">${text(meta.join(' ｜ '))}</div>
+    ${version.summary ? `<p class="summary">${text(version.summary)}</p>` : ''}
+  </header>
+
+  <section>
+    <h2>用量</h2>
+    <table>
+      <thead><tr><th class="col-name">食材</th><th class="col-amount">用量</th><th>备注</th></tr></thead>
+      <tbody>
+${ingredientRows}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>步骤</h2>
+    <ol class="steps">
+${stepItems}
+    </ol>
+  </section>
+
+  <section>
+    <h2>火候判断标准</h2>
+    ${heatSection}
+  </section>
+
+  <footer class="card-foot">由「家庭食谱口述整理器」导出的定稿步骤卡（v<span class="num">${version.versionNo}</span>）。原始语音与整理依据保存在系统中，可随时回放核对。</footer>
+</main>
+<script>
+${CARD_JS}
+</script>
+</body>
+</html>
+`;
+}

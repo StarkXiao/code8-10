@@ -30,7 +30,7 @@ import {
 } from '../services/access';
 import { logActivity } from '../services/activity';
 import { computeSpecDiff, computeVersionDiff, summarizeLoggedSpec, type SpecSnapshot } from '../services/diff';
-import { renderRecipeMarkdown } from '../services/export';
+import { renderRecipeCardHtml, renderRecipeMarkdown } from '../services/export';
 import { notify, workspaceMemberIds } from '../services/notify';
 import { emitToWorkspace } from '../realtime/hub';
 import {
@@ -45,7 +45,7 @@ export const versionRouter: Router = Router();
 versionRouter.use(requireAuth);
 
 const diffQuerySchema = z.object({ against: z.string().min(1).optional() });
-const exportQuerySchema = z.object({ format: z.enum(['md', 'json']).default('md') });
+const exportQuerySchema = z.object({ format: z.enum(['md', 'json', 'card']).default('md') });
 
 /* ------------------------------------------------------------------ */
 /* 内部工具                                                            */
@@ -567,7 +567,7 @@ versionRouter.get(
   asyncHandler(async (req, res) => {
     const { versionId } = req.params;
     const access = await assertVersionRole(req.auth!.userId, versionId!, 'viewer');
-    const format = (req.query.format as 'md' | 'json' | undefined) ?? 'md';
+    const format = (req.query.format as 'md' | 'json' | 'card' | undefined) ?? 'md';
 
     const version = await loadVersionOrThrow(versionId!);
     const recipe = await prisma.recipe.findUnique({ where: { id: access.recipeId } });
@@ -618,6 +618,20 @@ versionRouter.get(
 
     if (format === 'json') {
       send(res, payload);
+      return;
+    }
+
+    if (format === 'card') {
+      // 可打印的单页步骤卡：自包含 HTML（内联样式与脚本，无任何外部资源）。
+      // 用户内容全部经 text() 转义后才进卡片；CSP 再兜底一层，
+      // 即使转义出现疏漏，注入的标记也加载不了任何外部资源、发不出请求。
+      const html = renderRecipeCardHtml(payload);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      );
+      res.send(html);
       return;
     }
 

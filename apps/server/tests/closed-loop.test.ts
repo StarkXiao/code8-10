@@ -524,4 +524,106 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
     expect(record?.deletedAt).not.toBeNull();
     expect(record?.sha256).toHaveLength(64);
   });
+
+  it('20. 定稿可导出为单页步骤卡：含用量表与火候判断标准，字号可调，内容已转义', async () => {
+    // 基于已发布的 v2 派生 v3 草稿，补上下锅要看的步骤与用量
+    const draft = await request(app)
+      .post(`/api/recipes/${recipeId}/versions`)
+      .set(auth(organizer))
+      .send({ fromVersionId: failedVersionId })
+      .expect(201);
+    const cardVersionId = draft.body.data.id as string;
+
+    await request(app)
+      .post(`/api/versions/${cardVersionId}/steps`)
+      .set(auth(organizer))
+      .send({
+        title: '炒糖色',
+        instruction: '冰糖下锅，中小火慢慢炒化，别急着翻',
+        heatLevel: 'medium_low',
+        temperatureCMin: 150,
+        temperatureCMax: 170,
+        durationSecondsMin: 120,
+        durationSecondsMax: 180,
+        sensoryCues: ['糖全部化开', '变枣红色', '闻到焦糖香'],
+      })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/versions/${cardVersionId}/ingredients`)
+      .set(auth(organizer))
+      .send({ name: '冰糖', amountValue: 6, amountUnit: 'g', note: '宁少勿多' })
+      .expect(201);
+
+    // 食材名里带 HTML 特殊字符：卡片必须转义，不能原样拼进页面
+    await request(app)
+      .post(`/api/versions/${cardVersionId}/ingredients`)
+      .set(auth(organizer))
+      .send({ name: '盐<script>alert(1)</script>', amountText: '一小撮' })
+      .expect(201);
+
+    // 一条火候类整理结论，应出现在卡片的"火候判断标准"里
+    const heatItem = await request(app)
+      .post(`/api/recipes/${recipeId}/vague-items`)
+      .set(auth(organizer))
+      .send({ category: 'heat', rawPhrase: '炒到差不多就行', clipId, versionId: cardVersionId })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/vague-items/${heatItem.body.data.id}/resolve`)
+      .set(auth(organizer))
+      .send({
+        resolvedSpec: {
+          type: 'heat',
+          criterion: '糖色枣红、冒细密小泡、有焦糖香',
+          confidence: 'confirmed',
+          evidence: { clipId },
+        },
+      })
+      .expect(200);
+
+    await request(app).post(`/api/versions/${cardVersionId}/submit`).set(auth(organizer)).expect(200);
+    await request(app)
+      .post(`/api/versions/${cardVersionId}/publish`)
+      .set(auth(organizer))
+      .send({ changeNote: '补齐步骤与用量，定稿用于打印步骤卡' })
+      .expect(200);
+
+    const card = await request(app)
+      .get(`/api/versions/${cardVersionId}/export`)
+      .query({ format: 'card' })
+      .set(auth(organizer))
+      .expect(200);
+
+    expect(card.headers['content-type']).toContain('text/html');
+
+    // 用量表
+    expect(card.text).toContain('用量');
+    expect(card.text).toContain('冰糖');
+    expect(card.text).toContain('宁少勿多');
+
+    // 火候判断标准：步骤的火候/温度/观察指标 + 火候类整理结论
+    expect(card.text).toContain('火候判断标准');
+    expect(card.text).toContain('中小火');
+    expect(card.text).toContain('变枣红色');
+    expect(card.text).toContain('糖色枣红、冒细密小泡、有焦糖香');
+    expect(card.text).toContain('炒到差不多就行');
+
+    // 正文与数字字号都能调整：调节控件、CSS 变量、被标记出的数字
+    expect(card.text).toContain('正文字号');
+    expect(card.text).toContain('数字字号');
+    expect(card.text).toContain('--body-size');
+    expect(card.text).toContain('--num-size');
+    expect(card.text).toContain('<span class="num">6</span>g');
+
+    // 可打印：打印样式存在，工具栏打印时隐藏
+    expect(card.text).toContain('@media print');
+    expect(card.text).toContain('window.print');
+
+    // 用户输入的 HTML 必须被转义（页面自带的脚本是静态的，不含用户内容）。
+    // 注意：转义后数字会被包进 <span class="num">，所以分段断言。
+    expect(card.text).toContain('盐&lt;script&gt;alert(');
+    expect(card.text).toContain('&lt;/script&gt;');
+    expect(card.text).not.toContain('<script>alert');
+  });
 });
