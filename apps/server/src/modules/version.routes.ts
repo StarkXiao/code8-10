@@ -30,7 +30,7 @@ import {
 } from '../services/access';
 import { logActivity } from '../services/activity';
 import { computeSpecDiff, computeVersionDiff, summarizeLoggedSpec, type SpecSnapshot } from '../services/diff';
-import { renderRecipeMarkdown } from '../services/export';
+import { renderRecipeMarkdown, renderRecipeStepCard } from '../services/export';
 import { notify, workspaceMemberIds } from '../services/notify';
 import { emitToWorkspace } from '../realtime/hub';
 import {
@@ -45,7 +45,7 @@ export const versionRouter: Router = Router();
 versionRouter.use(requireAuth);
 
 const diffQuerySchema = z.object({ against: z.string().min(1).optional() });
-const exportQuerySchema = z.object({ format: z.enum(['md', 'json']).default('md') });
+const exportQuerySchema = z.object({ format: z.enum(['md', 'json', 'card']).default('md') });
 
 /* ------------------------------------------------------------------ */
 /* 内部工具                                                            */
@@ -567,7 +567,7 @@ versionRouter.get(
   asyncHandler(async (req, res) => {
     const { versionId } = req.params;
     const access = await assertVersionRole(req.auth!.userId, versionId!, 'viewer');
-    const format = (req.query.format as 'md' | 'json' | undefined) ?? 'md';
+    const format = (req.query.format as 'md' | 'json' | 'card' | undefined) ?? 'md';
 
     const version = await loadVersionOrThrow(versionId!);
     const recipe = await prisma.recipe.findUnique({ where: { id: access.recipeId } });
@@ -618,6 +618,16 @@ versionRouter.get(
 
     if (format === 'json') {
       send(res, payload);
+      return;
+    }
+
+    // 步骤卡是自包含 HTML：内联返回，浏览器直接打开即可调字号、打印
+    if (format === 'card') {
+      const html = renderRecipeStepCard(payload);
+      const filename = encodeURIComponent(`${recipe.title}-v${version.versionNo}-步骤卡.html`);
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${filename}`);
+      res.send(html);
       return;
     }
 

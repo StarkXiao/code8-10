@@ -121,7 +121,7 @@ export const versionApi = {
    * 导出走的是浏览器的 <a href> 直接下载，没法带 Authorization 头，
    * 所以必须像音频流一样把令牌放进查询参数（服务端两种方式都支持）。
    */
-  exportUrl: (versionId: string, format: 'md' | 'json' = 'md') => {
+  exportUrl: (versionId: string, format: 'md' | 'json' | 'card' = 'md') => {
     const token = tokenStore.access;
     const query = `format=${format}${token ? `&access_token=${encodeURIComponent(token)}` : ''}`;
     return `/api/versions/${versionId}/export?${query}`;

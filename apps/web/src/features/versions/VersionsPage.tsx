@@ -151,6 +151,11 @@ export function VersionsPage() {
                       导出
                     </Button>
                   </a>
+                  <a href={versionApi.exportUrl(record.id, 'card')} target="_blank" rel="noreferrer">
+                    <Button size="small" type="link">
+                      步骤卡
+                    </Button>
+                  </a>
                 </Space>
               ),
             },

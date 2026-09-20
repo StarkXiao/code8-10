@@ -524,4 +524,59 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
     expect(record?.deletedAt).not.toBeNull();
     expect(record?.sha256).toHaveLength(64);
   });
+
+  it('20. 导出可打印的单页步骤卡：含用量表与火候判断标准，正文与数字字号可分别调整', async () => {
+    // 派生一个草稿，补上用量与带火候信息的步骤，验证卡片内容
+    const draft = await request(app)
+      .post(`/api/recipes/${recipeId}/versions`)
+      .set(auth(organizer))
+      .send({ fromVersionId: failedVersionId })
+      .expect(201);
+    const draftId = draft.body.data.id as string;
+
+    await request(app)
+      .post(`/api/versions/${draftId}/ingredients`)
+      .set(auth(organizer))
+      .send({ name: '冰糖', amountValue: 6, amountUnit: 'g', note: '原话"放一点糖"' })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/versions/${draftId}/steps`)
+      .set(auth(organizer))
+      .send({
+        title: '炒糖色',
+        instruction: '冷锅下糖，<b>不断翻炒</b>到枣红色',
+        heatLevel: 'medium',
+        heatText: '中火就行',
+        temperatureCMin: 160,
+        temperatureCMax: 180,
+        durationSecondsMin: 120,
+        durationSecondsMax: 180,
+        sensoryCues: ['糖全部化开', '变枣红色', '闻到焦糖香'],
+      })
+      .expect(201);
+
+    const card = await request(app)
+      .get(`/api/versions/${draftId}/export`)
+      .query({ format: 'card' })
+      .set(auth(organizer))
+      .expect(200);
+
+    expect(card.headers['content-type']).toContain('text/html');
+    // 用量表与火候判断标准都在卡片上
+    expect(card.text).toContain('用量表');
+    expect(card.text).toContain('冰糖');
+    expect(card.text).toContain('火候判断标准');
+    expect(card.text).toContain('中火');
+    expect(card.text).toContain('变枣红色');
+    // 数字被单独包裹，正文与数字字号是两个独立变量
+    expect(card.text).toContain('class="num"');
+    expect(card.text).toContain('--body-size');
+    expect(card.text).toContain('--num-size');
+    expect(card.text).toContain('正文字号');
+    expect(card.text).toContain('数字字号');
+    // 用户输入必须转义，不能原样进 HTML
+    expect(card.text).not.toContain('<b>不断翻炒</b>');
+    expect(card.text).toContain('&lt;b&gt;不断翻炒&lt;/b&gt;');
+  });
 });
